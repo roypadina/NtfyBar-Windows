@@ -94,3 +94,24 @@ public sealed class EchoGuard(Func<DateTimeOffset>? clock = null)
                 _ids.Remove(id);
     }
 }
+
+/// <summary>
+/// Counts saved files that arrive close together, so a multi-file send collapses into one
+/// "N files saved" toast. A file more than <paramref name="window"/> after the previous one starts a new burst.
+/// </summary>
+public sealed class FileBurst(TimeSpan window)
+{
+    public static readonly TimeSpan DefaultWindow = TimeSpan.FromSeconds(5);
+
+    private DateTimeOffset? _last;
+
+    /// <summary>Files in the current burst, this one included: 1 = a new burst.</summary>
+    public int Count { get; private set; }
+
+    public int Add(DateTimeOffset now)
+    {
+        Count = _last is { } last && now - last <= window ? Count + 1 : 1;
+        _last = now;
+        return Count;
+    }
+}

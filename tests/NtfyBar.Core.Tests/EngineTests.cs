@@ -136,6 +136,94 @@ public class EngineTests
     }
 
     [Fact]
+    public async Task SendGoesTextThenPictureThenFilesAndRemembersTheTopic()
+    {
+        using var rig = new Rig();
+        rig.Start();
+        var file = rig.Dir.File("notes.pdf");
+        File.WriteAllText(file, "pdf");
+
+        var r = await rig.Engine.SendAsync(rig.Other.Id, "hi", [1, 2], [file], title: "", tags: ["work"], priority: 4);
+
+        Assert.Equal(new SendOutcome(true, "Sent to “Other” · 2 files"), r);
+        var sends = rig.Server.Handler.Requests.Where(q => q.Method != HttpMethod.Get).ToList();
+        Assert.Equal(["/", "/other-topic", "/other-topic"], sends.Select(q => q.Uri.AbsolutePath));
+        Assert.Equal(["clip.png", "notes.pdf"], sends.Skip(1).Select(q => q.Query["filename"]));
+        Assert.Equal("ntfybar-win,work", sends[1].Query["tags"]);
+        Assert.False(sends[1].Query.ContainsKey("title"));
+        Assert.Equal(rig.Other.Id, rig.Engine.Config.Publish.LastTopicId);
+        Assert.Equal(rig.Other.Id, rig.Store.LoadConfig()!.Publish.LastTopicId);
+
+        Assert.Equal(new SendOutcome(true, "Sent to “Other”"), await rig.Engine.SendAsync(rig.Other.Id, "text only", null, []));
+        Assert.Equal(new SendOutcome(false, "Couldn't send: nothing to send"), await rig.Engine.SendAsync(rig.Other.Id, " \n", null, []));
+    }
+
+    [Fact]
+    public async Task FailedSendSaysWhyAndHowMuchWentOutAndKeepsTheLastTopic()
+    {
+        using var rig = new Rig();
+        rig.Start();
+        var file = rig.Dir.File("a.txt");
+        File.WriteAllText(file, "a");
+
+        var missing = await rig.Engine.SendAsync(rig.Clipboard.Id, "hi", null, [file, rig.Dir.File("gone.txt")]);
+        Assert.Equal(new SendOutcome(false, "Couldn't send: a file could not be read"), missing);  // refused before any upload
+        var invalid = await rig.Engine.SendAsync(Guid.NewGuid(), "hi", null, []);
+        Assert.Equal(new SendOutcome(false, "Couldn't send: invalid server or topic"), invalid);
+        Assert.Null(rig.Engine.Config.Publish.LastTopicId);
+
+        var denied = new Rig();
+        try
+        {
+            var engine = new Engine(denied.Store, denied.Log, new FakeHandler(q => q.Method == HttpMethod.Post
+                ? FakeHandler.Json("""{"id":"x"}""")
+                : FakeHandler.Status(q.Method == HttpMethod.Put ? 403 : 200)));
+            engine.Start();
+            var partial = await engine.SendAsync(denied.Clipboard.Id, "hi", [1], []);
+            Assert.Equal(new SendOutcome(false, "Couldn't send: not allowed on this topic (1 of 2 went out)"), partial);
+            engine.Dispose();
+        }
+        finally
+        {
+            denied.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task ConnectionTestPollsTheTopicsWithTheGivenSignIn()
+    {
+        using var rig = new Rig();
+        rig.Start();
+        var server = new ServerConfig { Url = "https://ntfy.example/", Auth = ServerAuth.WithToken("tk_test") };
+
+        Assert.Equal(ConnectionCheck.Ok, (await rig.Engine.TestConnectionAsync(server, ["example-topic", "bad/name", "example-topic"])).Check);
+        var poll = rig.Server.Handler.Requests.Last();
+        Assert.Equal($"https://ntfy.example/example-topic/json?poll=1&since={T}", poll.Uri.AbsoluteUri);
+        Assert.Equal("Bearer tk_test", poll.Header("Authorization"));
+
+        Assert.Equal(ConnectionCheck.Ok, (await rig.Engine.TestConnectionAsync(server, [])).Check);
+        Assert.Equal("https://ntfy.example/v1/account", rig.Server.Handler.Requests.Last().Uri.AbsoluteUri);
+
+        rig.Server.NextStatus(401);
+        var rejected = await rig.Engine.TestConnectionAsync(server, ["example-topic"]);
+        Assert.Equal((ConnectionCheck.NotAllowed, 401), (rejected.Check, rejected.HttpStatus));
+        Assert.Contains("sign-in rejected", rejected.Describe());
+        rig.Server.NextStatus(301);
+        Assert.Equal(ConnectionCheck.Redirected, (await rig.Engine.TestConnectionAsync(server, ["example-topic"])).Check);
+        Assert.Equal(ConnectionCheck.InvalidUrl, (await rig.Engine.TestConnectionAsync(new ServerConfig { Url = "ftp://x" }, [])).Check);
+    }
+
+    [Fact]
+    public async Task ConnectionTestReportsUnreachable()
+    {
+        using var rig = new Rig();
+        var engine = new Engine(rig.Store, rig.Log, new FakeHandler(_ => throw new HttpRequestException(HttpRequestError.NameResolutionError)));
+        var r = await engine.TestConnectionAsync(rig.Config.Servers[0], []);
+        Assert.Equal("Unreachable: no answer from the server", r.Describe());
+        engine.Dispose();
+    }
+
+    [Fact]
     public async Task SavingTheSameConfigRetriesAStreamStoppedByAuth()
     {
         using var rig = new Rig();

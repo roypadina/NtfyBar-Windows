@@ -8,6 +8,23 @@ public sealed record IncomingMessage(
 /// <summary>"N messages while away" for one topic, raised once a catch-up burst has gone quiet.</summary>
 public sealed record MissedSummary(TopicConfig Topic, int Count);
 
+public enum ConnectionCheck { Ok, NotAllowed, Unreachable, Redirected, InvalidUrl, HttpError }
+
+/// <summary>Outcome of <see cref="Engine.TestConnectionAsync"/>.</summary>
+public sealed record ConnectionResult(ConnectionCheck Check, int HttpStatus = 0)
+{
+    public string Describe() => Check switch
+    {
+        ConnectionCheck.Ok => "OK: the server answered and accepted the sign-in",
+        ConnectionCheck.NotAllowed when HttpStatus == 401 => "Not allowed: sign-in rejected (HTTP 401), check user, password or token",
+        ConnectionCheck.NotAllowed => $"Not allowed: no read access to a topic (HTTP {HttpStatus})",
+        ConnectionCheck.Unreachable => "Unreachable: no answer from the server",
+        ConnectionCheck.Redirected => $"The server redirected (HTTP {HttpStatus}): enter the final URL",
+        ConnectionCheck.InvalidUrl => "The server URL is not valid (example: https://ntfy.example)",
+        _ => $"The server answered HTTP {HttpStatus}",
+    };
+}
+
 /// <summary>
 /// The app's Core facade: owns config, one <see cref="NtfyStream"/> per server, the own-echo guard,
 /// publishing and attachment downloads. No UI types. Events run on the
@@ -135,6 +152,101 @@ public sealed class Engine : IDisposable
         Resolve(topicId, title, tags, priority) is { } t
             ? _publisher.PublishBytesAsync(t.Server, t.Topic, png, "clip.png", t.Options, ct)
             : Task.FromResult(new PublishResult(PublishStatus.InvalidTarget));
+
+    /// <summary>
+    /// One user-initiated send (Send Clipboard, Publish…, Send To): files are checked first (count,
+    /// size, readable), then the text goes (skipped when blank), then the picture, then each file;
+    /// stops at the first failure. Success remembers the topic as
+    /// <see cref="PublishSettings.LastTopicId"/>.
+    /// </summary>
+    public async Task<SendOutcome> SendAsync(Guid topicId, string? text, byte[]? png, IReadOnlyList<string> files,
+        string? title = null, IReadOnlyList<string>? tags = null, int priority = 3, CancellationToken ct = default)
+    {
+        var hasText = !string.IsNullOrWhiteSpace(text);
+        var total = (hasText ? 1 : 0) + (png is null ? 0 : 1) + files.Count;
+        if (total == 0) return new SendOutcome(false, "Couldn't send: nothing to send");
+        if (files.Count > 0 && Publisher.CheckFiles(files) is { } refused) return new SendOutcome(false, $"Couldn't send: {refused.Describe()}");
+        var sent = 0;
+        SendOutcome Failed(PublishResult r) =>
+            new(false, $"Couldn't send: {r.Describe()}" + (sent > 0 ? $" ({sent} of {total} went out)" : ""));
+
+        if (hasText)
+        {
+            var r = await PublishTextAsync(topicId, text!, title, tags, priority, ct);
+            if (!r.Ok) return Failed(r);
+            sent++;
+        }
+        if (png is not null)
+        {
+            var r = await PublishImageAsync(topicId, png, title, tags, priority, ct);
+            if (!r.Ok) return Failed(r);
+            sent++;
+        }
+        if (files.Count > 0)
+        {
+            var results = await PublishFilesAsync(topicId, files, title, tags, priority, ct);
+            sent += results.Count(r => r.Ok);
+            if (results.FirstOrDefault(r => !r.Ok) is { } bad) return Failed(bad);
+        }
+        RememberTopic(topicId);
+        var fileCount = files.Count + (png is null ? 0 : 1);
+        return new SendOutcome(true, $"Sent to “{Config.Topic(topicId)?.DisplayLabel}”" + (fileCount == 0 ? "" : $" · {fileCount} {(fileCount == 1 ? "file" : "files")}"));
+    }
+
+    private void RememberTopic(Guid topicId)
+    {
+        if (Config.Publish.LastTopicId == topicId) return;
+        var c = Config.Clone();
+        c.Publish.LastTopicId = topicId;
+        try
+        {
+            UpdateConfig(c);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"last topic not saved: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Settings → Test connection, with unsaved settings: one authenticated request. With topics it
+    /// polls them (read access, nothing new returned); without, it asks <c>/v1/account</c>.
+    /// </summary>
+    public async Task<ConnectionResult> TestConnectionAsync(ServerConfig server, IEnumerable<string> topics, CancellationToken ct = default)
+    {
+        if (server.BaseUri is not { } baseUri) return new ConnectionResult(ConnectionCheck.InvalidUrl);
+        var names = topics.Where(TopicConfig.IsValidTopicName).Distinct(StringComparer.Ordinal).ToList();
+        var url = names.Count > 0
+            ? new Uri($"{NtfyStream.BuildUri(baseUri, names, null).AbsoluteUri}?poll=1&since={_clock().ToUnixTimeSeconds()}")
+            : new Uri(baseUri.AbsoluteUri.TrimEnd('/') + "/v1/account");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (server.Auth.HeaderValue is { } auth) request.Headers.TryAddWithoutValidation("Authorization", auth);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            var status = (int)response.StatusCode;
+            _log.Info($"connection test: HTTP {status}");
+            return new ConnectionResult(status switch
+            {
+                >= 200 and < 300 => ConnectionCheck.Ok,
+                401 or 403 => ConnectionCheck.NotAllowed,
+                >= 300 and < 400 => ConnectionCheck.Redirected,
+                _ => ConnectionCheck.HttpError,
+            }, status);
+        }
+        catch (HttpRequestException e)
+        {
+            _log.Info($"connection test: {e.HttpRequestError}");
+            return new ConnectionResult(ConnectionCheck.Unreachable);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Info("connection test timed out");
+            return new ConnectionResult(ConnectionCheck.Unreachable);
+        }
+    }
 
     // Downloads: credentials only to the message's own server origin.
 

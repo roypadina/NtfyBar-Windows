@@ -78,7 +78,18 @@ public enum DownloadStatus
 
 /// <param name="Path">Saved file (<see cref="AttachmentDownloader.DownloadFileAsync"/>).</param>
 /// <param name="Text">Decoded text (<see cref="AttachmentDownloader.DownloadTextAsync"/>).</param>
-public sealed record DownloadResult(DownloadStatus Status, string? Path = null, string? Text = null, int HttpStatus = 0);
+public sealed record DownloadResult(DownloadStatus Status, string? Path = null, string? Text = null, int HttpStatus = 0)
+{
+    /// <summary>Short user-facing reason, e.g. for a toast.</summary>
+    public string Describe() => Status switch
+    {
+        DownloadStatus.Saved => "saved",
+        DownloadStatus.Expired => "attachment expired on the server",
+        DownloadStatus.TooLarge => "attachment too large, not downloaded",
+        DownloadStatus.NotAllowed => $"download not allowed (HTTP {HttpStatus})",
+        _ => HttpStatus > 0 ? $"download failed (HTTP {HttpStatus})" : "download failed",
+    };
+}
 
 /// <summary>
 /// Attachment downloads. Only http(s) URLs; the server's Authorization header goes only to the same

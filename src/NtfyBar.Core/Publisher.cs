@@ -100,15 +100,7 @@ public sealed class Publisher(HttpClient http, EchoGuard echo, ILog? log = null)
     public async Task<IReadOnlyList<PublishResult>> PublishFilesAsync(ServerConfig server, string topic, IReadOnlyList<string> paths, PublishOptions o, CancellationToken ct = default)
     {
         if (Target(server, topic) is not { } baseUri) return [new PublishResult(PublishStatus.InvalidTarget)];
-        if (paths.Count > MaxFiles) return [new PublishResult(PublishStatus.TooManyFiles)];
-        try
-        {
-            if (paths.Any(p => new FileInfo(p).Length > MaxFileBytes)) return [new PublishResult(PublishStatus.TooLarge)];
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            return [new PublishResult(PublishStatus.FileError)];
-        }
+        if (CheckFiles(paths) is { } refused) return [refused];
 
         var results = new List<PublishResult>();
         foreach (var path in paths)
@@ -130,15 +122,30 @@ public sealed class Publisher(HttpClient http, EchoGuard echo, ILog? log = null)
         return results;
     }
 
+    /// <summary>The checks made before any upload: null = OK, else why the files are refused.</summary>
+    public static PublishResult? CheckFiles(IReadOnlyList<string> paths)
+    {
+        if (paths.Count > MaxFiles) return new PublishResult(PublishStatus.TooManyFiles);
+        try
+        {
+            if (paths.Any(p => new FileInfo(p).Length > MaxFileBytes)) return new PublishResult(PublishStatus.TooLarge);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return new PublishResult(PublishStatus.FileError);
+        }
+        return null;
+    }
+
     /// <summary><c>tags</c> as sent: device tag first, then the user's tags (no duplicates, no blanks).</summary>
     public static List<string> AllTags(PublishOptions o) =>
         new[] { o.DeviceTag }.Concat(o.Tags ?? []).Select(t => t.Trim()).Where(t => t.Length > 0).Distinct(StringComparer.Ordinal).ToList();
 
-    /// <summary>First <see cref="PreviewChars"/> characters plus "…" when cut (never splits a surrogate pair).</summary>
-    public static string Preview(string text)
+    /// <summary>First <paramref name="max"/> characters plus "…" when cut (never splits a surrogate pair).</summary>
+    public static string Preview(string text, int max = PreviewChars)
     {
-        if (text.Length <= PreviewChars) return text;
-        var cut = char.IsHighSurrogate(text[PreviewChars - 1]) ? PreviewChars - 1 : PreviewChars;
+        if (text.Length <= max) return text;
+        var cut = char.IsHighSurrogate(text[max - 1]) ? max - 1 : max;
         return text[..cut] + "…";
     }
 

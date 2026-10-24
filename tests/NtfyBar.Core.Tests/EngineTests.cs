@@ -136,6 +136,19 @@ public class EngineTests
     }
 
     [Fact]
+    public async Task SavingTheSameConfigRetriesAStreamStoppedByAuth()
+    {
+        using var rig = new Rig();
+        rig.Server.NextStatus(401);
+        rig.Start();
+        Assert.True(await Wait.Until(() => rig.Engine.OverallStatus?.State == StreamState.AuthFailed));
+
+        rig.Engine.UpdateConfig(rig.Engine.Config.Clone());  // e.g. the server ACL was fixed, Settings → Save
+        Assert.True(await Wait.Until(() => rig.Server.StreamRequests.Count == 2));
+        Assert.True(await Wait.Until(() => rig.Engine.OverallStatus?.State == StreamState.Connecting));
+    }
+
+    [Fact]
     public void InvalidConfigKeepsDefaultsAndTheFile()
     {
         using var rig = new Rig();

@@ -87,7 +87,10 @@ public sealed class Engine : IDisposable
         return true;
     }
 
-    /// <summary>Saves (secrets protected on disk) and applies: streams whose URL, credentials or topics changed restart.</summary>
+    /// <summary>
+    /// Saves (secrets protected on disk) and applies: streams whose URL, credentials or topics changed
+    /// restart, and so do streams stopped by 401/403/3xx (saving Settings = "try again").
+    /// </summary>
     public void UpdateConfig(AppConfig config)
     {
         _store.SaveConfig(config);
@@ -176,7 +179,7 @@ public sealed class Engine : IDisposable
             var signature = string.Join('\n', [baseUri.AbsoluteUri, w.Server.Auth.HeaderValue ?? "", .. w.Topics.Order(StringComparer.Ordinal)]);
             if (_streams.TryGetValue(id, out var old))
             {
-                if (old.Signature == signature) continue;
+                if (old.Signature == signature && !old.Stream.Status.IsTerminal) continue;
                 old.Stream.Stop();
             }
             if (!_cursors.TryGetValue(id, out var cursor)) _cursors[id] = cursor = new StreamCursor();

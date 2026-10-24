@@ -29,19 +29,29 @@ internal static class Toasts
         ToastNotificationManagerCompat.OnActivated += e => ui.Post(_ => onActivated(ToastArguments.Parse(e.Argument)), null);
     }
 
-    /// <summary>Up to 2 buttons (more are ignored).</summary>
-    public static void Show(string title, string body, params ToastButtonSpec[] buttons)
+    /// <summary>
+    /// Up to 2 buttons (more are ignored). A toast with the same <paramref name="tag"/> replaces the
+    /// previous one (multi-file bursts). <paramref name="silent"/> = no sound.
+    /// </summary>
+    public static void Show(string title, string? body = null, IEnumerable<ToastButtonSpec>? buttons = null, string? tag = null, bool silent = false)
     {
         try
         {
-            var builder = new ToastContentBuilder().AddText(title).AddText(body);
-            foreach (var b in buttons.Take(2))
+            var builder = new ToastContentBuilder().AddText(title);
+            if (!string.IsNullOrEmpty(body)) builder.AddText(body);
+            foreach (var b in (buttons ?? []).Take(2))
             {
                 var button = new ToastButton().SetContent(b.Label).AddArgument(ActionKey, b.Action);
                 if (b.Value is not null) button.AddArgument(ValueKey, b.Value);
                 builder.AddButton(button);
             }
-            builder.Show();
+            if (silent) builder.AddAudio(new ToastAudio { Silent = true });
+            builder.Show(toast =>
+            {
+                if (tag is null) return;
+                toast.Tag = tag;
+                toast.Group = "ntfybar";
+            });
         }
         catch (Exception e)
         {

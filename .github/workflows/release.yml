@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Check tag matches Directory.Build.props
+        shell: pwsh
+        run: |
+          $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match <Version>$version</Version>" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Test
+        run: dotnet test NtfyBar.sln -c Release
+
+      - name: Publish
+        run: >
+          dotnet publish src/NtfyBar.App -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o publish
+
+      - name: Zip and release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "NtfyBar-win-x64-v$env:VERSION.zip"
+          Compress-Archive -Path publish/NtfyBar.exe, README.md, LICENSE -DestinationPath $zip
+          $extra = @()
+          if ($env:VERSION.StartsWith('0.')) { $extra += '--prerelease' }  # 0.x = BETA
+          gh release create $env:GITHUB_REF_NAME $zip --title "NtfyBar for Windows $env:GITHUB_REF_NAME" --generate-notes @extra

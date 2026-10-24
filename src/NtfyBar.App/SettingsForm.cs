@@ -275,11 +275,8 @@ internal sealed class SettingsForm : Form
         Apply("Start with Windows", () => Shell.SetAutostart(config.LaunchAtLogin), failed);
         Apply("Send To", () => Shell.SetSendTo(_sendTo.Checked), failed);
         _saved();
-        if (failed.Count > 0)
-        {
-            _status.Text = $"Saved, but {string.Join(" and ", failed)} could not be changed (see the log).";
-            return;
-        }
+        // Close even then: the grid rows are now the engine's live topics, further edits must not touch them.
+        if (failed.Count > 0) Toasts.Show("Settings saved", $"{string.Join(" and ", failed)} could not be changed (see the log).");
         Close();
     }
 

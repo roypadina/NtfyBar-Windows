@@ -174,6 +174,7 @@ public sealed class NtfyStream(
                     case "open":
                         openTime = m.Time;
                         _attempt = 0;
+                        _log.Info($"stream connected ({_topics.Count} topics)");
                         SetStatus(new StreamStatus(StreamState.Connected));
                         break;
                     case "message" when _topics.Contains(m.Topic) && !Cursor.HasSeen(m):

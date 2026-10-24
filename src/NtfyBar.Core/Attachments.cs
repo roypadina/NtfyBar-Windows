@@ -112,7 +112,7 @@ public sealed class AttachmentDownloader(HttpClient http, ILog? log = null)
     /// <summary>Saves into <paramref name="dir"/> (created on demand) under a sanitized, unique name.</summary>
     public async Task<DownloadResult> DownloadFileAsync(NtfyAttachment a, ServerConfig? server, string dir, CancellationToken ct = default)
     {
-        return await FetchAsync(a, server, MaxBytes, async body =>
+        return await FetchAsync(a, server, MaxBytes, async (body, ct) =>
         {
             Directory.CreateDirectory(dir);
             var root = Path.GetFullPath(dir);
@@ -138,7 +138,7 @@ public sealed class AttachmentDownloader(HttpClient http, ILog? log = null)
     /// <summary>Text attachment (<see cref="Clip.IsTextAttachment"/>): ≤ 1 MB, decoded as UTF-8.</summary>
     public async Task<DownloadResult> DownloadTextAsync(NtfyAttachment a, ServerConfig? server, CancellationToken ct = default)
     {
-        return await FetchAsync(a, server, Clip.MaxTextAttachmentBytes, async body =>
+        return await FetchAsync(a, server, Clip.MaxTextAttachmentBytes, async (body, ct) =>
         {
             using var buffer = new MemoryStream();
             if (!await CopyCappedAsync(body, buffer, Clip.MaxTextAttachmentBytes, ct))
@@ -148,27 +148,35 @@ public sealed class AttachmentDownloader(HttpClient http, ILog? log = null)
     }
 
     private async Task<DownloadResult> FetchAsync(NtfyAttachment a, ServerConfig? server, long max,
-        Func<Stream, Task<DownloadResult>> save, CancellationToken ct)
+        Func<Stream, CancellationToken, Task<DownloadResult>> save, CancellationToken ct)
     {
         if (!Uri.TryCreate(a.Url, UriKind.Absolute, out var url) || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
             return new DownloadResult(DownloadStatus.Failed);
         if (a.Size > max) return new DownloadResult(DownloadStatus.TooLarge);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(Publisher.UploadTimeout);
+        var token = cts.Token;
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             if (AuthHeaderFor(url, server) is { } auth) request.Headers.TryAddWithoutValidation("Authorization", auth);
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
             var status = (int)response.StatusCode;
             if (status is 404 or 410) return new DownloadResult(DownloadStatus.Expired, HttpStatus: status);
             if (status is 401 or 403) return new DownloadResult(DownloadStatus.NotAllowed, HttpStatus: status);
             if (!response.IsSuccessStatusCode) return new DownloadResult(DownloadStatus.Failed, HttpStatus: status);
             if (response.Content.Headers.ContentLength > max) return new DownloadResult(DownloadStatus.TooLarge);
-            await using var body = await response.Content.ReadAsStreamAsync(ct);
-            return await save(body);
+            await using var body = await response.Content.ReadAsStreamAsync(token);
+            return await save(body, token);
         }
         catch (Exception e) when (e is HttpRequestException or IOException or UnauthorizedAccessException)
         {
             _log.Warn($"attachment download failed: {e.GetType().Name}");
+            return new DownloadResult(DownloadStatus.Failed);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warn("attachment download timed out");
             return new DownloadResult(DownloadStatus.Failed);
         }
     }

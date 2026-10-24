@@ -25,6 +25,7 @@ so each receiver has one code path. Examples use `https://ntfy.example` and `exa
 - `title` defaults to the device name. For files, `message` = the file name, so the notification
   reads "Laptop: photo.jpg" instead of the server's generic text.
 - Limits, checked before anything is uploaded: at most 20 files per send, at most 100 MB per file.
+- Text is sent with LF line endings (senders convert CRLF first), so the byte limits count LF.
 - Nothing else goes in the body: the clipboard body is the raw payload, no footer.
 
 Errors a sender should name: 401/403 "not allowed on this topic", 413 "too large", 429 "rate

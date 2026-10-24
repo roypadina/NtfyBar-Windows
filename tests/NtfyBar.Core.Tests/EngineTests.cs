@@ -249,6 +249,31 @@ public class EngineTests
     }
 
     [Fact]
+    public void FirstSaveAfterInvalidConfigKeepsTheBadFileAside()
+    {
+        using var rig = new Rig();
+        File.WriteAllText(rig.Store.ConfigPath, "{ broken");
+        Assert.False(rig.Start());
+        var c = rig.Engine.Config.Clone();
+        c.LaunchAtLogin = true;
+        rig.Engine.UpdateConfig(c);
+        Assert.Equal("{ broken", File.ReadAllText(rig.Store.ConfigPath + ".invalid"));
+        Assert.True(rig.Store.LoadConfig()!.LaunchAtLogin);
+        rig.Engine.UpdateConfig(c);  // only the first save moves anything
+        Assert.Equal("{ broken", File.ReadAllText(rig.Store.ConfigPath + ".invalid"));
+    }
+
+    [Fact]
+    public async Task TextIsSentWithLfLineEndings()
+    {
+        using var rig = new Rig();
+        rig.Start();
+        await rig.Engine.SendAsync(rig.Clipboard.Id, "a\r\nb\rc", null, []);
+        var body = rig.Server.Handler.Requests.Last(r => r.Method == HttpMethod.Post).Body;
+        Assert.Equal("a\nb\nc", JsonDocument.Parse(body!).RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task ExpiredAttachmentIsNotRequested()
     {
         using var rig = new Rig();

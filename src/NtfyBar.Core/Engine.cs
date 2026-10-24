@@ -46,6 +46,7 @@ public sealed class Engine : IDisposable
     private Dictionary<Guid, StreamCursor> _cursors = [];
     private readonly object _stateGate = new();
     private CancellationTokenSource? _missedFlush;
+    private bool _configInvalid;  // Start found a broken config.json; the first save moves it aside
 
     /// <param name="handler">Tests pass a fake; the default never follows redirects and keeps no cookies.</param>
     /// <param name="missedDebounce">Quiet time after the last missed message before <see cref="MissedSummaryReady"/> (default 2 s).</param>
@@ -90,6 +91,7 @@ public sealed class Engine : IDisposable
     {
         var loaded = _store.LoadConfig();
         if (loaded is not null) Config = loaded;
+        _configInvalid = loaded is null;
         _cursors = _store.LoadState();
         ApplyStreams();
         return loaded is not null;
@@ -100,6 +102,7 @@ public sealed class Engine : IDisposable
     {
         if (_store.LoadConfig() is not { } loaded) return false;
         Config = loaded;
+        _configInvalid = false;
         ApplyStreams();
         return true;
     }
@@ -107,9 +110,15 @@ public sealed class Engine : IDisposable
     /// <summary>
     /// Saves (secrets protected on disk) and applies: streams whose URL, credentials or topics changed
     /// restart, and so do streams stopped by 401/403/3xx (saving Settings = "try again").
+    /// A config.json found invalid at <see cref="Start"/> is first renamed to <c>config.json.invalid</c> (an older copy is replaced).
     /// </summary>
     public void UpdateConfig(AppConfig config)
     {
+        if (_configInvalid)
+        {
+            File.Move(_store.ConfigPath, _store.ConfigPath + ".invalid", overwrite: true);
+            _configInvalid = false;
+        }
         _store.SaveConfig(config);
         Config = config;
         ApplyStreams();
@@ -162,6 +171,7 @@ public sealed class Engine : IDisposable
     public async Task<SendOutcome> SendAsync(Guid topicId, string? text, byte[]? png, IReadOnlyList<string> files,
         string? title = null, IReadOnlyList<string>? tags = null, int priority = 3, CancellationToken ct = default)
     {
+        text = text?.ReplaceLineEndings("\n");  // protocol: LF on the wire, so the byte thresholds count LF
         var hasText = !string.IsNullOrWhiteSpace(text);
         var total = (hasText ? 1 : 0) + (png is null ? 0 : 1) + files.Count;
         if (total == 0) return new SendOutcome(false, "Couldn't send: nothing to send");

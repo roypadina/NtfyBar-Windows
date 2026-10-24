@@ -56,9 +56,17 @@ internal sealed class TrayContext : ApplicationContext
         _autostart.Click += (_, _) => ToggleAutostart();
         _icon = new NotifyIcon { Icon = LoadIcon(SystemInformation.SmallIconSize), Text = "NtfyBar", ContextMenuStrip = menu, Visible = true };
 
-        Toasts.Init(OnToastActivated, _log);
-        var toastLaunch = ToastNotificationManagerCompat.WasCurrentProcessToastActivated();
-        if (toastLaunch) _log.Info("started by a toast click");
+        var toastLaunch = false;
+        try
+        {
+            Toasts.Init(OnToastActivated, _log);
+            toastLaunch = ToastNotificationManagerCompat.WasCurrentProcessToastActivated();
+            if (toastLaunch) _log.Info("started by a toast click");
+        }
+        catch (Exception e)
+        {
+            _log.Warn($"toasts unavailable: {e.GetType().Name}");  // the tray still works; Toasts.Show swallows its own failures
+        }
 
         // Engine events run on the context that calls Start: the UI thread (installed by the first control above).
         _engine.StatusChanged += OnStatusChanged;
@@ -72,7 +80,7 @@ internal sealed class TrayContext : ApplicationContext
         ApplyHotKey();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
-        _ = SingleInstance.ListenAsync(OnArgs, _quit.Token);
+        _ = SingleInstance.ListenAsync(OnArgs, _log, _quit.Token);
         OnArgs(args);
         // First run = the Settings form; not when a toast click started us or config.json needs fixing by hand.
         if (configOk && !toastLaunch && _engine.Config.Topics.Count == 0) ShowSettings(firstRun);

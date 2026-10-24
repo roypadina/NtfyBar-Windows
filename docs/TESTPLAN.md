@@ -322,6 +322,17 @@ sends the **picture** (pictures win over text, same as the Mac).
    - Expect: no NtfyBar entry. Task Manager → Startup apps: no NtfyBar.
 5. Start `NtfyBar.exe` again to keep using it (Settings are still there; tick Start with Windows and Send To again).
 
+### S10 Invalid config.json
+1. Tray → **Quit NtfyBar**.
+2. Win+R → `%APPDATA%\NtfyBar\config.json` → open in Notepad, replace everything with `{ broken`, save.
+3. Start `NtfyBar.exe`.
+   - Expect: toast "NtfyBar: config.json is not valid". Tray → **Recent** and Settings show no topics.
+   - Log: `config.json unreadable (JsonException); keeping the last good config`
+4. Tray → click **Start with Windows**.
+   - Expect: `config.json.invalid` now exists next to `config.json` and still holds `{ broken`.
+5. Edit `config.json.invalid` to valid JSON (or copy your old settings back as `config.json`), then tray → **Quit NtfyBar** and start `NtfyBar.exe` again.
+   - Expect: no "not valid" toast; your topics are back.
+
 ## 5. Report back
 
 For each failed test send: the test id (e.g. R3 step 2), what happened instead, and

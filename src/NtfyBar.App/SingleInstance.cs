@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using NtfyBar.Core;
 
 namespace NtfyBar.App;
 
@@ -28,8 +29,9 @@ internal static class SingleInstance
     }
 
     /// <summary>Runs until cancelled; <paramref name="onArgs"/> runs on the caller's synchronization context (UI thread).</summary>
-    public static async Task ListenAsync(Action<string[]> onArgs, CancellationToken ct)
+    public static async Task ListenAsync(Action<string[]> onArgs, ILog log, CancellationToken ct)
     {
+        var logged = false;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -45,9 +47,13 @@ internal static class SingleInstance
             {
                 return;
             }
-            catch (IOException)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                // Client vanished mid-write: wait for the next one.
+                // Client vanished mid-write, or the pipe can't be created: pause so a persistent failure doesn't spin.
+                if (!logged) log.Warn($"single-instance pipe failed: {e.GetType().Name}");
+                logged = true;
+                try { await Task.Delay(1000, ct); }
+                catch (OperationCanceledException) { return; }
             }
         }
     }
